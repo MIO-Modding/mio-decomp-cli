@@ -200,6 +200,10 @@ class GinDecompiler:
 
             file_paths.append(file_path)
 
+        if len(file_paths) == 0:
+            print("No .gin files found. Please select at least one .gin file.")
+            typer.Abort()
+
         for file in file_paths:
             file_output_dir: Path = output_dir / file.stem
             file_output_dir.mkdir(777)

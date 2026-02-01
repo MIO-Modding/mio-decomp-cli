@@ -15,6 +15,11 @@ dependencies = [
     "typer>=0.21.1",
     "zstandard>=0.25.0",
 ]
+keywords = ["decompile", "decompiler", "mio", "memories-in-orbit"]
+
+[project.urls]
+Homepage = "https://github.com/ShackledMars261/mio-decomp-cli"
+"Bug Tracker" = "https://github.com/ShackledMars261/mio-decomp-cli/issues"
 
 [project.scripts]
 mio-decomp = "mio_decomp.main:app"

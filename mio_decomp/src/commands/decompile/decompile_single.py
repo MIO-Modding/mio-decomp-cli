@@ -9,8 +9,8 @@ from mio_decomp.src.libraries.decompiler.decompiler import GinDecompiler
 app = typer.Typer()
 
 
-@app.command()
-def decompile(
+@app.command(name="single")
+def decompile_single(
     target_file: Annotated[
         Path,
         typer.Argument(
@@ -41,10 +41,10 @@ def decompile(
         bool, typer.Option(help="Enables print statements used in debugging.")
     ] = False,
 ):
-    """Decompile a .gin file."""
+    """Decompiles a single .gin file."""
     if output_dir is None:
-        output_dir: Path = target_file.parent / "extracted_gin"
-        output_dir.resolve()
+        output_dir: Path = target_file.parent / "extracted"
+        output_dir = output_dir.resolve()
 
     if not output_dir.exists():
         output_dir.mkdir(parents=True, exist_ok=True)

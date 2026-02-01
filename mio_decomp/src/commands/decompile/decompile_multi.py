@@ -11,10 +11,10 @@ from mio_decomp.src.libraries.decompiler.decompiler import GinDecompiler
 app = typer.Typer()
 
 
-@app.command()
+@app.command(name="decompile")
 def decompile_multi(
     output_dir: Annotated[
-        Path,
+        Path | None,
         typer.Option(
             "-o",
             "--output",
@@ -26,7 +26,7 @@ def decompile_multi(
             readable=False,
             resolve_path=True,
         ),
-    ],
+    ] = None,
     input_paths: Annotated[
         list[Path] | None,
         typer.Argument(
@@ -43,6 +43,7 @@ def decompile_multi(
         bool, typer.Option(help="Enables print statements used in debugging.")
     ] = False,
 ):
+    """Decompiles multiple .gin files."""
     if input_paths is None:
         target_path: Path = config.config_model.game_dir / "flamby"
         target_path: Path = target_path.resolve()
@@ -52,6 +53,10 @@ def decompile_multi(
             )
             raise typer.Abort()
         input_paths: list[Path] = [path for path in target_path.iterdir()]
+
+    if output_dir is None:
+        output_dir: Path = Path("./extracted")
+        output_dir = output_dir.resolve()
 
     final_input_paths: list[Path] = []
 
@@ -81,9 +86,6 @@ def decompile_multi(
                     shutil.rmtree(file)
                 else:
                     file.unlink()
-
-    print(final_input_paths)
-    print(output_dir)
 
     decompiler: GinDecompiler = GinDecompiler(silent=not debug)
     decompiler.decompile_multi(input_paths=final_input_paths, output_dir=output_dir)
