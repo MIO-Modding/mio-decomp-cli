@@ -214,3 +214,4 @@ test_saves/
 .vscode/
 entries_generator/
 test_json.json
+extracted/

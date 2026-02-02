@@ -59,38 +59,48 @@ class MIOParts(BaseModel):
 
 
 class Enum_single(StrEnum):
-    Up = auto()
-    Cuve = auto()
-    Start = auto()
-    Personal_assistant = auto()
-    Unknown = auto()
-    Intro = auto()
-    First_encounter = auto()
-    Rambling = auto()
-    City = auto()
+    UP = "Up"
+    CUVE = "Cuve"
+    START = "Start"
+    PERSONAL_ASSISTANT = "Personal_assistant"
+    UNKNOWN = "Unknown"
+    INTRO = "Intro"
+    FIRST_ENCOUNTER = "First_encounter"
+    RAMBLING = "Rambling"
+    CITY = "City"
+    HOME = "Home"
+    HOUSE2 = "House2"
+    CONNECTED_WITH_PEARLS = "Connected_with_pearls"
+    NEW_HOME = "New_home"
+    KNOWN = "Known"
+    MEL_RETURNED = "Mel_returned"
+    LIBRARY = "Library"
+    AFTERMATH = "Aftermath"
+    RETURNED = "Returned"
+    PROJECT = "Project"
 
 
 class HalynAlign(BaseModel):
     configuration_discrete: int = 2
     first_rotation_ever: bool = True
-    state: Enum_single = Enum_single.Up
+    state: Enum_single = Enum_single.UP
 
 
 class Tomo(BaseModel):
-    quest: Enum_single = Enum_single.Cuve
+    quest: Enum_single = Enum_single.CUVE
 
 
 class FrailPuppet(BaseModel):
-    quest: Enum_single = Enum_single.Start
+    quest: Enum_single = Enum_single.START
 
 
 class Capu(BaseModel):
-    capu_name: Enum_single = Enum_single.Personal_assistant
-    quest: Enum_single = Enum_single.Start
+    capu_name: Enum_single = Enum_single.PERSONAL_ASSISTANT
+    quest: Enum_single = Enum_single.START
 
 
 class Hacker(BaseModel):
-    hacker_name: Enum_single = Enum_single.Unknown
+    hacker_name: Enum_single = Enum_single.UNKNOWN
     met_at_least_once: bool = False
 
 
@@ -100,7 +110,7 @@ class Philosopher(BaseModel):
 
 
 class Shii(BaseModel):
-    quest: Enum_single = Enum_single.Intro
+    quest: Enum_single = Enum_single.INTRO
     still_dead_when_hub_attacked: bool = False
     bridge_intro_done: bool = False
 
@@ -112,8 +122,8 @@ class Minions(BaseModel):
 
 
 class Mel(BaseModel):
-    quest: Enum_single = Enum_single.Intro
-    name: Enum_single = Enum_single.Unknown
+    quest: Enum_single = Enum_single.INTRO
+    name: Enum_single = Enum_single.UNKNOWN
     minions: Minions = Minions()
     met_in_shop_once: bool = False
     rambo_awoken: bool = False
@@ -130,11 +140,11 @@ class Tan(BaseModel):
 
 
 class Rad(BaseModel):
-    quest: Enum_single = Enum_single.First_encounter
+    quest: Enum_single = Enum_single.FIRST_ENCOUNTER
 
 
 class Estrogen(BaseModel):
-    quest: Enum_single = Enum_single.Rambling
+    quest: Enum_single = Enum_single.RAMBLING
     has_refused_audience: bool = False
 
 
@@ -144,7 +154,7 @@ class MIOPlotPoints(BaseModel):
 
 class HalynPlotPoints(BaseModel):
     encountered: bool = False
-    statue: Enum_single = Enum_single.City
+    statue: Enum_single = Enum_single.CITY
 
 
 class Goliath(BaseModel):
@@ -292,6 +302,8 @@ class SaveParser:
             return float(value[4:-1])
         elif value.startswith("f64"):
             return float(value[4:-1])
+        elif value.startswith("Enum_single"):
+            return Enum_single(value[13:-2])
         else:
             typer.Abort()
             return None
