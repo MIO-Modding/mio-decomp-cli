@@ -210,4 +210,7 @@ __marimo__/
 config.json
 output/
 test_gins/
+test_saves/
 .vscode/
+entries_generator/
+test_json.json

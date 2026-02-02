@@ -11,8 +11,8 @@ from mio_decomp.src.libraries.decompiler.decompiler import GinDecompiler
 app = typer.Typer()
 
 
-@app.command(name="decompile")
-def decompile_multi(
+@app.command()
+def decompile(
     output_dir: Annotated[
         Path | None,
         typer.Option(
@@ -43,7 +43,7 @@ def decompile_multi(
         bool, typer.Option(help="Enables print statements used in debugging.")
     ] = False,
 ):
-    """Decompiles multiple .gin files."""
+    """Decompiles .gin files."""
     if input_paths is None:
         target_path: Path = config.config_model.game_dir / "flamby"
         target_path: Path = target_path.resolve()

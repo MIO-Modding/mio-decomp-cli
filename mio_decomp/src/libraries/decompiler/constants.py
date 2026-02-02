@@ -1,5 +1,6 @@
-import sys
 from enum import IntEnum
+
+MAX_UINT64 = 18446744073709551615
 
 GIN_MAGIC_NUMBER: int = 0x004E4947  # Little endian ascii translates this into "GIN\0"
 GIN_VERSION: int = 2
@@ -9,9 +10,7 @@ GIN_SECTION_PARAM_COUNT = 4
 
 GIN_MAX_PATH = 256
 
-GIN_SECTION_DUMMY_ID: int = (
-    sys.maxsize
-)  # for non-queryable sections (ex: referenced by other sections, .reloc & co)
+GIN_SECTION_DUMMY_ID: int = MAX_UINT64  # for non-queryable sections (ex: referenced by other sections, .reloc & co)
 
 
 class FLAGS(IntEnum):
