@@ -1,4 +1,3 @@
-import shutil
 from pathlib import Path
 from typing import Annotated
 
@@ -39,6 +38,12 @@ def decompile(
             resolve_path=True,
         ),
     ] = None,
+    structure: Annotated[
+        bool,
+        typer.Option(
+            help="Structure the outputted files according to the filepaths in their binaries."
+        ),
+    ] = True,
     debug: Annotated[
         bool, typer.Option(help="Enables print statements used in debugging.")
     ] = False,
@@ -76,16 +81,17 @@ def decompile(
         contents: list[Path] = list(output_dir.iterdir())
         if len(contents) > 0:
             delete: bool = typer.confirm(
-                f"Are you sure you want to delete {len(contents)} files?"
+                f"Are you sure you want to delete {len(contents)} files/directories?"
             )
             if not delete:
                 raise typer.Abort()
-            for file in contents:
-                print(f'Deleting "{file}".')
-                if file.is_dir():
-                    shutil.rmtree(file)
-                else:
-                    file.unlink()
 
     decompiler: GinDecompiler = GinDecompiler(silent=not debug)
-    decompiler.decompile_multi(input_paths=final_input_paths, output_dir=output_dir)
+    if structure:
+        decompiler.decompile_to_structure(
+            input_paths=final_input_paths, output_dir=output_dir
+        )
+    else:
+        decompiler.decompile_multi(input_paths=final_input_paths, output_dir=output_dir)
+
+    print("Done!")

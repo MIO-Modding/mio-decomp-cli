@@ -1,11 +1,14 @@
 # Huge thanks to @mistwreathed for creating the original version of this tool.
 #
+import json
 import os
+import shutil
 import struct
 import sys
 from pathlib import Path
 
 import lz4.block
+import pathvalidate
 import typer
 from rich import print
 from zstandard import ZstdDecompressor
@@ -89,16 +92,29 @@ class GinDecompiler:
 
             return magic == GIN_MAGIC_NUMBER
 
-    def decompile_file(self, file_path: Path, output_dir: Path) -> None:
+    def decompile_file(
+        self,
+        file_path: Path,
+        output_dir: Path,
+        file_count_offset: int = 0,
+        include_number_prefix: bool = True,
+    ) -> list[Path]:
         """Decompiles a single .gin file.
 
         Args:
             file_path (Path): The path to the .gin file to decompile.
             output_dir (Path): The directory to output to.
+            file_count_offset (int): The offset for the number prefixing the filenames.
+            include_number_prefix (bool): Include a unique number at the start of the filenames.
+
+        Returns:
+            list[Path]: The output file paths.
         """
         if not file_path.exists():  # File should always exist, but just to make sure
             print("The selected file doesn't exist.")
             typer.Abort()
+
+        output: list[Path] = []
 
         with file_path.open("rb") as f:
             # --- 1. Read Main Header ---
@@ -159,11 +175,16 @@ class GinDecompiler:
                     safe_name: str = "".join(
                         [c for c in raw_name if c.isalnum() or c in ("_", "-", ".")]
                     )
-                    out_name: str = f"{i:03d}_{safe_name}.bin"
+                    if include_number_prefix:
+                        out_name: str = f"{(i + file_count_offset):04d}_{safe_name}"
+                    else:
+                        out_name: str = f"{safe_name}"
                     out_path: Path = output_dir / out_name
 
                     with out_path.open("wb") as out_f:
                         out_f.write(final_data)
+
+                    output.append(output_dir / out_name)
 
                     comp_tag: str = (
                         "[ZSTD]"
@@ -174,14 +195,30 @@ class GinDecompiler:
                         f"Extracted: {out_name} {comp_tag} ({len(final_data)} bytes)"
                     )
 
-    def decompile_multi(self, input_paths: list[Path], output_dir: Path):
+        return output
+
+    def decompile_multi(
+        self,
+        input_paths: list[Path],
+        output_dir: Path,
+        include_number_prefix: bool = True,
+    ) -> list[Path]:
         """Decompiles multiple .gin files.
 
         Args:
             input_paths (list[Path]): A list of all of the paths to decompile.
             output_dir (Path): The directory to output all of the decompiled files to.
+            include_number_prefix (bool): Include a unique number at the start of the filenames.
+
+        Returns:
+            list[Path]: The output file paths.
         """
+        if output_dir.exists():
+            shutil.rmtree(output_dir)
+        output_dir.mkdir(parents=True, exist_ok=False)
+
         file_paths: list[Path] = []
+        current_file_count_offset: int = 0
 
         for file_path in input_paths:
             if not os.access(file_path, os.R_OK):
@@ -200,6 +237,8 @@ class GinDecompiler:
 
             file_paths.append(file_path)
 
+        output_paths: list[Path] = []
+
         if len(file_paths) == 0:
             print("No .gin files found. Please select at least one .gin file.")
             typer.Abort()
@@ -207,4 +246,209 @@ class GinDecompiler:
         for file in file_paths:
             file_output_dir: Path = output_dir / file.stem
             file_output_dir.mkdir(777)
-            self.decompile_file(file, file_output_dir)
+            print(f'Decompiling "{file}"..')
+            paths: list[Path] = self.decompile_file(
+                file_path=file,
+                output_dir=file_output_dir,
+                file_count_offset=current_file_count_offset,
+                include_number_prefix=include_number_prefix,
+            )
+            for p in paths:
+                output_paths.append(p)
+            current_file_count_offset += len(paths)
+
+        return output_paths
+
+    def __walk_dir(self, dir: Path) -> list[Path]:
+        output: list[Path] = []
+        for dirpath, dirnames, filenames in os.walk(dir):
+            for filename in filenames:
+                path: Path = Path(dirpath) / filename
+                path: Path = path.resolve()
+                output.append(path)
+
+        return output
+
+    def __read_until_zero_byte(self, input_file: Path, start_offset: int = 0) -> bytes:
+        output: bytes = b""
+        with input_file.open("rb") as f:
+            f.seek(start_offset)
+            while True:
+                new_byte = f.read(1)
+                if new_byte == b"\x00":
+                    break
+                output += new_byte
+
+        return output
+
+    def __read_gin_file_path_from_binary(
+        self, input_file: Path, start_offset: int = 0
+    ) -> bytes:
+        output: bytes = b""
+        with input_file.open("rb") as f:
+            f.seek(start_offset)
+            while True:
+                new_byte = f.read(1)
+                if new_byte == b"\x00" or output.decode("utf-8").endswith(".gin"):
+                    break
+                output += new_byte
+
+        return output
+
+    def __remove_all_suffixes(self, p: Path) -> Path:
+        """Removes all file extensions from a pathlib.Path object."""
+        while p.suffix:
+            p = p.with_suffix("")
+        return p
+
+    def __remove_suffix_until_gin(self, p: Path) -> Path:
+        while p.suffix and not p.suffix == ".gin":
+            p = p.with_suffix("")
+        return p
+
+    def __get_suffixes_after_gin(self, p: Path) -> list[str]:
+        suffixes: list[str] = []
+        while p.suffix and not p.suffix == ".gin":
+            suffixes.append(p.suffix)
+            p = p.with_suffix("")
+        return reversed(suffixes)
+
+    def decompile_to_structure(self, input_paths: list[Path], output_dir: Path) -> None:
+        if output_dir.exists():
+            shutil.rmtree(output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        temp_dir: Path = output_dir / "decompiled"
+        temp_dir: Path = temp_dir.resolve()
+        temp_dir.mkdir(parents=True, exist_ok=True)
+
+        ship_dir: Path = output_dir / "ship"
+        ship_dir: Path = ship_dir.resolve()
+        ship_dir.mkdir(parents=True, exist_ok=True)
+
+        mappings_file: Path = output_dir / "mappings.json"
+        mappings_file: Path = mappings_file.resolve()
+        if mappings_file.exists():
+            mappings_file.unlink()
+        mappings_file.touch()
+
+        self.decompile_multi(
+            input_paths,
+            output_dir=temp_dir,
+            include_number_prefix=False,
+        )
+
+        decompiled_paths: list[Path] = self.__walk_dir(temp_dir)
+
+        print("Structuring files..")
+
+        skipped_paths: list[Path] = []
+        structure_mappings: dict[Path, Path] = {}
+
+        for path in decompiled_paths:
+            if (
+                path.suffix[1:] in ["reloc", "alloc", "assets"]
+                and not path.parent.name == "assets"
+            ):
+                skipped_paths.append(path)
+            else:
+                try:
+                    if path.parent.name == "assets":
+                        new_path: Path = ship_dir / "decomp_assets" / path.name
+                        new_path: Path = new_path.resolve()
+                    elif path.suffix[1:] in [
+                        "csv",
+                        "otf",
+                        "ttf",
+                    ]:  # filter out font files
+                        new_path: Path = ship_dir / "fonts" / path.name
+                        new_path: Path = new_path.resolve()
+                    else:
+                        new_path: Path = (
+                            ship_dir
+                            / self.__read_gin_file_path_from_binary(path, 20).decode(
+                                "utf-8"
+                            )
+                        )
+                        new_path: Path = new_path.resolve()
+                except UnicodeDecodeError as _:
+                    new_path: Path = ship_dir / path.name
+                    new_path: Path = new_path.resolve()
+
+                if pathvalidate.is_valid_filepath(
+                    str(new_path), platform="windows"
+                ) and not str(new_path) == str(ship_dir):
+                    new_path.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy(path, new_path)
+                    structure_mappings[path] = new_path
+                else:
+                    skipped_paths.append(path)
+
+        for path in skipped_paths:
+            no_ext_path: Path = (
+                path.parent / f"{self.__remove_suffix_until_gin(path).resolve().stem}"
+            )
+            no_ext_path: Path = no_ext_path.resolve()
+
+            gin_path: Path = (
+                path.parent
+                / f"{self.__remove_suffix_until_gin(path).resolve().stem}.gin"
+            )
+            gin_path: Path = gin_path.resolve()
+
+            if gin_path in structure_mappings.keys():
+                # print(f"GIN FOUND! {gin_path}")
+                matched_path: Path = gin_path.resolve()
+                file_suffixes: list[str] = [
+                    ".gin",
+                    *self.__get_suffixes_after_gin(path),
+                ]
+            elif no_ext_path in structure_mappings.keys():
+                # print(f"NO_EXT FOUND! {no_ext_path}")
+                matched_path: Path = no_ext_path.resolve()
+                file_suffixes: list[str] = self.__get_suffixes_after_gin(path)
+            elif (
+                path.name
+                == "ST_factory_factory_pearl.ST_factory_turning_stop_pearl_inverted"  # this specific file breaks stuff, so we make an exception for it here
+            ):
+                # print(f"INVERTED PEARL BYPASS HIT!\n\tpath.name: {path.name}")
+                matched_path: Path = (
+                    path.parent
+                    / "ST_factory_factory_pearl.ST_factory_turning_stop_pearl.gin"
+                )
+                ending_extension: str = "".join(
+                    [".ST_factory_turning_stop_pearl_inverted"]
+                )
+                dest_path: Path = (
+                    structure_mappings[matched_path].resolve().parent
+                    / f"{structure_mappings[matched_path].resolve().with_suffix('').stem}{ending_extension}"
+                )
+                dest_path: Path = dest_path.resolve()
+                shutil.copy(path, dest_path)
+                structure_mappings[path] = dest_path
+                continue
+            else:
+                print(f"NO MATCH FOUND. {path}")
+                print(f"    UNMATCHED NO_EXT: {no_ext_path}")
+                print(f"    path.name: {path.name}")
+                continue
+
+            ending_extension: str = "".join(file_suffixes)
+
+            dest_path: Path = (
+                structure_mappings[matched_path].resolve().parent
+                / f"{structure_mappings[matched_path].resolve().stem}{ending_extension}"
+            )
+            dest_path: Path = dest_path.resolve()
+            shutil.copy(path, dest_path)
+            structure_mappings[path] = dest_path
+
+        structure_mappings_str: dict[str, str] = {
+            str(path): str(dest_path) for path, dest_path in structure_mappings.items()
+        }
+        structure_mappings_final: dict[str, str] = {
+            key: value for key, value in sorted(structure_mappings_str.items())
+        }  # sort alphabetically to group .gin files with their related files
+
+        with mappings_file.open("w") as f:
+            json.dump(structure_mappings_final, f, indent=4)
