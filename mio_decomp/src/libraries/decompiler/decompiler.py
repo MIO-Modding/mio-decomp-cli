@@ -9,16 +9,19 @@ import sys
 from pathlib import Path
 
 import lz4.block
+import mmh3
 import pathvalidate
 import typer
 from pydantic import BaseModel, Field, field_serializer, field_validator
 from rich import print
-from zstandard import ZstdDecompressor
+from zstandard import ZstdCompressor, ZstdDecompressor
 
 from .constants import (
     GIN_MAGIC_NUMBER,
+    GIN_MAIN_HEADER_FORMAT_STRING,
     GIN_MAX_PATH,
     GIN_SECTION_FLAGS,
+    GIN_SECTION_HEADER_FORMAT_STRING,
     GIN_SECTION_NAME_SIZE,
     GIN_SECTION_PARAM_COUNT,
 )
@@ -49,7 +52,7 @@ class GinMainHeader(Base64Model):
     reserved_2: u32 = 0
     file_path: bytes = Field(b"", max_length=GIN_MAX_PATH)
     section_count: u32 = 0
-    checksum: bytes = Field(b"", max_length=16)
+    checksum: bytes = Field(b"\x00" * 16, max_length=16)
 
 
 class GinSectionHeader(Base64Model):
@@ -61,7 +64,7 @@ class GinSectionHeader(Base64Model):
     params: bytes = Field(b"", max_length=GIN_SECTION_PARAM_COUNT * 4)
     section_version: u32 = 0
     section_id: bytes = Field(b"", max_length=16)
-    checksum: bytes = Field(b"", max_length=16)
+    checksum: bytes = Field(b"\x00" * 16, max_length=16)
 
 
 class GinHeaderFile(Base64Model):
@@ -93,8 +96,8 @@ class GinDecompiler:
 
         Args:
             data (bytes): The data to decompress.
-            flags (_type_): Compression flags.
-            original_size (_type_): The size of the decompressed data.
+            flags (int): Compression flags.
+            original_size (int): The size of the decompressed data.
 
         Returns:
             bytes | None: The decompressed data. The value is None if decompression fails.
@@ -114,6 +117,39 @@ class GinDecompiler:
         except Exception as e:
             self.__print(f"    [!] Decompression failed: {e}")
             return None
+
+    def __compress_data(self, data: bytes, flags: int) -> bytes:
+        """Handles compression based on section flags.
+
+        Args:
+            data (bytes): The data to compress.
+            flags (int): Compression flags.
+
+        Returns:
+            bytes: The compressed data.
+        """
+        try:
+            if flags & GIN_SECTION_FLAGS.ZSTD:
+                # ZSTD Compression
+                cctx: ZstdCompressor = ZstdCompressor(
+                    level=3,
+                    write_content_size=False,
+                    write_checksum=False,
+                    write_dict_id=False,
+                )
+                return cctx.compress(data)
+            elif flags & GIN_SECTION_FLAGS.LZ4:
+                # LZ4 Block Compression
+                return lz4.block.compress(
+                    data,
+                    store_size=False,
+                )
+            else:
+                # Raw Data (No Compression)
+                return data
+        except Exception as e:
+            self.__print(f"    [!] Compression failed: {e}")
+            return b""
 
     def check_if_gin_file(self, file_path: Path) -> bool:
         """Checks if a file's magic number matches a .gin's.
@@ -176,7 +212,7 @@ class GinDecompiler:
         with file_path.open("rb") as f:
             # --- 1. Read Main Header ---
             # Structure: u32 magic, u32 ver, u32 res[2], char id[16], u32 res2, char path[256], u32 count, u64 check[2]
-            header_fmt = "<II8s16sI256sI16s"
+            header_fmt = GIN_MAIN_HEADER_FORMAT_STRING
             header_size = struct.calcsize(header_fmt)
 
             header_data = f.read(header_size)
@@ -210,7 +246,7 @@ class GinDecompiler:
 
             # --- 2. Read Section Table ---
             # Structure: u8 name[64], u64 offset, u32 size, u32 c_size, u32 flags, u32 params[4], u32 ver, char id[16], u64 check[2]
-            sect_fmt = "<64sQIII16sI16s16s"
+            sect_fmt = GIN_SECTION_HEADER_FORMAT_STRING
             sect_size = struct.calcsize(sect_fmt)
 
             sections: list = []
@@ -559,3 +595,135 @@ class GinDecompiler:
 
         with mappings_file.open("w") as f:
             json.dump(structure_mappings_final, f, indent=4)
+
+    def __overwrite_bytes(
+        self, original_bytes: bytes, new_bytes: bytes, starting_index: int = 0
+    ) -> bytes:
+        """Overwrite bytes in the middle of a bytes object.
+
+        Args:
+            original_bytes (bytes): The bytes that contain what you want to overwrite.
+            new_bytes (bytes): The bytes you want to set.
+            starting_index (int, optional): Where to start overwriting at. Defaults to 0.
+
+        Returns:
+            bytes: The bytes with the overwritten bytes.
+        """
+        mutable_data: bytearray = bytearray(original_bytes)
+        mutable_data[starting_index : starting_index + len(new_bytes)] = new_bytes
+
+        return bytes(mutable_data)
+
+    def compile_single(
+        self,
+        header_file: Path,
+        mappings_file: Path,
+        output_file: Path,
+    ) -> None:
+        header_model: GinHeaderFile = GinHeaderFile.model_validate_json(
+            header_file.read_text()
+        )
+        with mappings_file.open("r") as f:
+            structure_mappings: dict[Path, Path] = {
+                Path(key).resolve(): Path(value).resolve()
+                for key, value in json.load(f).items()
+            }
+
+        structure_mappings_by_name: dict[str, Path] = {
+            key.name: value for key, value in structure_mappings.items()
+        }
+
+        new_header: GinHeaderFile = GinHeaderFile()
+        new_header.main = GinMainHeader(
+            magic=header_model.main.magic,
+            ver=header_model.main.ver,
+            reserved=header_model.main.reserved,
+            file_id=header_model.main.file_id,
+            reserved_2=header_model.main.reserved_2,
+            file_path=header_model.main.file_path,
+            section_count=header_model.main.section_count,
+            checksum=b"\x00" * 16,
+        )
+
+        sections_data: bytes = b""
+        header_length: int = struct.calcsize(GIN_MAIN_HEADER_FORMAT_STRING)
+        sections_offset: int = (
+            0
+            + header_length
+            + (
+                new_header.main.section_count
+                * struct.calcsize(GIN_SECTION_HEADER_FORMAT_STRING)
+            )
+        )
+
+        for i, section in header_model.sections.items():
+            old_sect_header: GinSectionHeader = header_model.sections[i]
+
+            sect_header: GinSectionHeader = GinSectionHeader(
+                name=old_sect_header.name,
+                offset=sections_offset,
+                size=0,
+                compressed_size=0,
+                flags=old_sect_header.flags,
+                params=old_sect_header.params,
+                section_version=old_sect_header.section_version,
+                section_id=old_sect_header.section_id,
+                checksum=b"\x00" * 16,
+            )
+
+            target_path: Path = structure_mappings_by_name[
+                old_sect_header.name.decode("ascii").rstrip("\x00")
+            ]
+            sect_data: bytes = target_path.read_bytes()
+            sect_header.size: int = len(sect_data)
+
+            compressed_sect_data: bytes = self.__compress_data(
+                sect_data, sect_header.flags
+            )
+            sect_header.compressed_size: int = len(compressed_sect_data)
+
+            sect_header.checksum = mmh3.hash_bytes(sect_data)
+
+            new_header.sections[i] = sect_header
+            sections_data += compressed_sect_data
+            sections_offset += len(compressed_sect_data)
+
+        final_data: bytes = struct.pack(
+            GIN_MAIN_HEADER_FORMAT_STRING,
+            new_header.main.magic,
+            new_header.main.ver,
+            new_header.main.reserved,
+            new_header.main.file_id,
+            new_header.main.reserved_2,
+            new_header.main.file_path,
+            new_header.main.section_count,
+            new_header.main.checksum,
+        )
+        sect_headers_data: bytes = b""
+        for i, sect_header in new_header.sections.items():
+            sect_headers_data += struct.pack(
+                GIN_SECTION_HEADER_FORMAT_STRING,
+                sect_header.name,
+                sect_header.offset,
+                sect_header.size,
+                sect_header.compressed_size,
+                sect_header.flags,
+                sect_header.params,
+                sect_header.section_version,
+                sect_header.section_id,
+                sect_header.checksum,
+            )
+        final_data += sect_headers_data
+
+        final_checksum: bytes = mmh3.hash_bytes(
+            final_data
+        )  # take checksum of main header and section headers
+
+        final_data += sections_data
+
+        new_header.main.checksum: bytes = final_checksum
+        final_data_with_checksum: bytes = self.__overwrite_bytes(
+            final_data, final_checksum, 296
+        )
+
+        output_file.write_bytes(final_data_with_checksum)

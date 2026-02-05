@@ -28,7 +28,6 @@ def parse(
         typer.Option(
             "-o",
             "--output",
-            "--output-dir",
             help="The file to output the JSON to. Will be overwritten if it exists. Will be printed to console if omitted.",
             file_okay=True,
             dir_okay=False,

@@ -20,3 +20,7 @@ class GIN_SECTION_FLAGS(IntEnum):
     SCHEMA: int = 1 << 3
     ZSTD: int = 1 << 4
     LZ4: int = 1 << 5
+
+
+GIN_MAIN_HEADER_FORMAT_STRING: str = "<II8s16sI256sI16s"
+GIN_SECTION_HEADER_FORMAT_STRING: str = "<64sQIII16sI16s16s"
