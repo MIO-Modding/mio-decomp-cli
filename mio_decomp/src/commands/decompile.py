@@ -92,6 +92,13 @@ def decompile(
             input_paths=final_input_paths, output_dir=output_dir
         )
     else:
-        decompiler.decompile_multi(input_paths=final_input_paths, output_dir=output_dir)
+        header_file_dir: Path = output_dir / "header_files"
+        header_file_dir: Path = header_file_dir.resolve()
+        header_file_dir.mkdir(parents=True, exist_ok=True)
+        decompiler.decompile_multi(
+            input_paths=final_input_paths,
+            output_dir=output_dir,
+            header_file_dir=header_file_dir,
+        )
 
     print("Done!")

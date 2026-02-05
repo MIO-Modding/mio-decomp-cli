@@ -13,7 +13,7 @@ GIN_MAX_PATH = 256
 GIN_SECTION_DUMMY_ID: int = MAX_UINT64  # for non-queryable sections (ex: referenced by other sections, .reloc & co)
 
 
-class FLAGS(IntEnum):
+class GIN_SECTION_FLAGS(IntEnum):
     SERIALIZED: int = 1 << 0
     RELOC: int = 1 << 1
     ALLOC: int = 1 << 2

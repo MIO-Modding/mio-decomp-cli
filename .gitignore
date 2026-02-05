@@ -208,7 +208,7 @@ __marimo__/
 
 # Custom
 config.json
-output/
+*output*/
 test_gins/
 test_saves/
 .vscode/

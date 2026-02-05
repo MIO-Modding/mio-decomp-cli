@@ -1,39 +1,11 @@
 from enum import StrEnum, auto
 from pathlib import Path
-from typing import Annotated
 
 import typer
-from pydantic import BaseModel, Field, conint
+from pydantic import BaseModel, Field
 from rich import print  # noqa: F401
 
-from .constants import MAX_UINT64
-
-u32 = Annotated[int, conint(strict=True, ge=0, le=4294967295)]
-u64 = Annotated[int, Field(ge=0, le=MAX_UINT64)]
-
-
-class Flags(StrEnum):
-    Acquired = auto()
-    Equipped = auto()
-
-
-class f32x2(BaseModel):
-    x: float
-    y: float
-
-    def __init__(self, x: int | float, y: int | float, **kwargs) -> None:
-        super(f32x2, self).__init__(x=x, y=y, **kwargs)
-
-
-class f32x3(BaseModel):
-    x: float
-    y: float
-    z: float
-
-    def __init__(
-        self, x: int | float, y: int | float, z: int | float, **kwargs
-    ) -> None:
-        super(f32x3, self).__init__(x=x, y=y, z=z, **kwargs)
+from .models import Flags, f32x2, f32x3, u32, u64
 
 
 class Trail(BaseModel):
@@ -304,6 +276,13 @@ class SaveParser:
             return float(value[4:-1])
         elif value.startswith("Enum_single"):
             return Enum_single(value[13:-2])
+        elif value.startswith("Flags"):
+            flags: list[Flags] = []
+            if "Acquired" in value:
+                flags.append(Flags.Acquired)
+            if "Equipped" in value:
+                flags.append(Flags.Equipped)
+            return flags
         else:
             typer.Abort()
             return None

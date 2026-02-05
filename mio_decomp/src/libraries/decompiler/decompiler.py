@@ -1,5 +1,6 @@
 # Huge thanks to @mistwreathed for creating the original version of this tool.
 #
+import base64
 import json
 import os
 import shutil
@@ -10,10 +11,62 @@ from pathlib import Path
 import lz4.block
 import pathvalidate
 import typer
+from pydantic import BaseModel, Field, field_serializer, field_validator
 from rich import print
 from zstandard import ZstdDecompressor
 
-from .constants import FLAGS, GIN_MAGIC_NUMBER
+from .constants import (
+    GIN_MAGIC_NUMBER,
+    GIN_MAX_PATH,
+    GIN_SECTION_FLAGS,
+    GIN_SECTION_NAME_SIZE,
+    GIN_SECTION_PARAM_COUNT,
+)
+from .models import u32, u64
+
+
+class Base64Model(BaseModel):
+    @field_serializer("*", when_used="json")
+    def serialize_bytes(self, v):
+        if isinstance(v, (bytes, bytearray)):
+            return base64.b64encode(v).decode("ascii")
+        return v
+
+    @field_validator("*", mode="before")
+    @classmethod
+    def deserialize_bytes(cls, v, info):
+        field = cls.model_fields.get(info.field_name)
+        if field and field.annotation is bytes and isinstance(v, str):
+            return base64.b64decode(v)
+        return v
+
+
+class GinMainHeader(Base64Model):
+    magic: u32 = 0
+    ver: u32 = 0
+    reserved: bytes = Field(b"", max_length=8)
+    file_id: bytes = Field(b"", max_length=16)
+    reserved_2: u32 = 0
+    file_path: bytes = Field(b"", max_length=GIN_MAX_PATH)
+    section_count: u32 = 0
+    checksum: bytes = Field(b"", max_length=16)
+
+
+class GinSectionHeader(Base64Model):
+    name: bytes = Field(b"", max_length=GIN_SECTION_NAME_SIZE)
+    offset: u64 = 0
+    size: u32 = 0
+    compressed_size: u32 = 0
+    flags: u32 = 0
+    params: bytes = Field(b"", max_length=GIN_SECTION_PARAM_COUNT * 4)
+    section_version: u32 = 0
+    section_id: bytes = Field(b"", max_length=16)
+    checksum: bytes = Field(b"", max_length=16)
+
+
+class GinHeaderFile(Base64Model):
+    main: GinMainHeader = GinMainHeader()
+    sections: dict[int, GinSectionHeader] = Field(default_factory=dict)
 
 
 class GinDecompiler:
@@ -40,18 +93,18 @@ class GinDecompiler:
 
         Args:
             data (bytes): The data to decompress.
-            flags (_type_): _description_
-            original_size (_type_): _description_
+            flags (_type_): Compression flags.
+            original_size (_type_): The size of the decompressed data.
 
         Returns:
             bytes | None: The decompressed data. The value is None if decompression fails.
         """
         try:
-            if flags & FLAGS.ZSTD:
+            if flags & GIN_SECTION_FLAGS.ZSTD:
                 # ZSTD Decompression
                 dctx: ZstdDecompressor = ZstdDecompressor()
                 return dctx.decompress(data, max_output_size=original_size)
-            elif flags & FLAGS.LZ4:
+            elif flags & GIN_SECTION_FLAGS.LZ4:
                 # LZ4 Block Decompression
                 return lz4.block.decompress(data, uncompressed_size=original_size)
             else:
@@ -96,6 +149,7 @@ class GinDecompiler:
         self,
         file_path: Path,
         output_dir: Path,
+        header_file_dir: Path,
         file_count_offset: int = 0,
         include_number_prefix: bool = True,
     ) -> list[Path]:
@@ -104,6 +158,7 @@ class GinDecompiler:
         Args:
             file_path (Path): The path to the .gin file to decompile.
             output_dir (Path): The directory to output to.
+            header_file_dir (Path): The directory to output the header file to.
             file_count_offset (int): The offset for the number prefixing the filenames.
             include_number_prefix (bool): Include a unique number at the start of the filenames.
 
@@ -116,6 +171,8 @@ class GinDecompiler:
 
         output: list[Path] = []
 
+        header_file: GinHeaderFile = GinHeaderFile()
+
         with file_path.open("rb") as f:
             # --- 1. Read Main Header ---
             # Structure: u32 magic, u32 ver, u32 res[2], char id[16], u32 res2, char path[256], u32 count, u64 check[2]
@@ -123,15 +180,33 @@ class GinDecompiler:
             header_size = struct.calcsize(header_fmt)
 
             header_data = f.read(header_size)
-            (magic, ver, _, _, _, _, section_count, _) = struct.unpack(
-                header_fmt, header_data
-            )
+            (
+                magic,
+                ver,
+                res,
+                file_id,
+                reserved_2,
+                header_file_path,
+                section_count,
+                checksum,
+            ) = struct.unpack(header_fmt, header_data)
 
             if magic != GIN_MAGIC_NUMBER:
                 print("The selected file is not a .gin file!")
                 raise typer.Abort()
 
             self.__print(f"Found {section_count} sections. Starting extraction...\n")
+
+            header_file.main = GinMainHeader(
+                magic=magic,
+                ver=ver,
+                reserved=res,
+                file_id=file_id,
+                reserved_2=reserved_2,
+                file_path=header_file_path,
+                section_count=section_count,
+                checksum=checksum,
+            )
 
             # --- 2. Read Section Table ---
             # Structure: u8 name[64], u64 offset, u32 size, u32 c_size, u32 flags, u32 params[4], u32 ver, char id[16], u64 check[2]
@@ -152,6 +227,18 @@ class GinDecompiler:
                 size_uncompressed: int = s_info[2]
                 size_compressed: int = s_info[3]
                 flags: int = s_info[4]
+
+                header_file.sections[i] = GinSectionHeader(
+                    name=s_info[0],
+                    offset=s_info[1],
+                    size=s_info[2],
+                    compressed_size=s_info[3],
+                    flags=s_info[4],
+                    params=s_info[5],
+                    section_version=s_info[6],
+                    section_id=s_info[7],
+                    checksum=s_info[8],
+                )
 
                 # Determine read size (if compressed, read compressed size, else read full size)
                 read_size: int = (
@@ -188,12 +275,20 @@ class GinDecompiler:
 
                     comp_tag: str = (
                         "[ZSTD]"
-                        if (flags & FLAGS["ZSTD"])
-                        else ("[LZ4]" if (flags & FLAGS["LZ4"]) else "[RAW]")
+                        if (flags & GIN_SECTION_FLAGS["ZSTD"])
+                        else (
+                            "[LZ4]" if (flags & GIN_SECTION_FLAGS["LZ4"]) else "[RAW]"
+                        )
                     )
                     self.__print(
                         f"Extracted: {out_name} {comp_tag} ({len(final_data)} bytes)"
                     )
+
+        header_file_path: Path = header_file_dir / f"{file_path.name}.json"
+        header_file_path: Path = header_file_path.resolve()
+
+        self.__print(f'Writing headers to "{str(header_file_path)}"..')
+        header_file_path.write_text(header_file.model_dump_json())
 
         return output
 
@@ -201,6 +296,7 @@ class GinDecompiler:
         self,
         input_paths: list[Path],
         output_dir: Path,
+        header_file_dir: Path,
         include_number_prefix: bool = True,
     ) -> list[Path]:
         """Decompiles multiple .gin files.
@@ -208,6 +304,7 @@ class GinDecompiler:
         Args:
             input_paths (list[Path]): A list of all of the paths to decompile.
             output_dir (Path): The directory to output all of the decompiled files to.
+            header_file_dir (Path): The directory to output the header files to.
             include_number_prefix (bool): Include a unique number at the start of the filenames.
 
         Returns:
@@ -250,6 +347,7 @@ class GinDecompiler:
             paths: list[Path] = self.decompile_file(
                 file_path=file,
                 output_dir=file_output_dir,
+                header_file_dir=header_file_dir,
                 file_count_offset=current_file_count_offset,
                 include_number_prefix=include_number_prefix,
             )
@@ -311,9 +409,13 @@ class GinDecompiler:
         while p.suffix and not p.suffix == ".gin":
             suffixes.append(p.suffix)
             p = p.with_suffix("")
-        return reversed(suffixes)
+        return list(reversed(suffixes))
 
-    def decompile_to_structure(self, input_paths: list[Path], output_dir: Path) -> None:
+    def decompile_to_structure(
+        self,
+        input_paths: list[Path],
+        output_dir: Path,
+    ) -> None:
         if output_dir.exists():
             shutil.rmtree(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -326,6 +428,10 @@ class GinDecompiler:
         ship_dir: Path = ship_dir.resolve()
         ship_dir.mkdir(parents=True, exist_ok=True)
 
+        header_file_dir: Path = output_dir / "header_files"
+        header_file_dir: Path = header_file_dir.resolve()
+        header_file_dir.mkdir(parents=True, exist_ok=True)
+
         mappings_file: Path = output_dir / "mappings.json"
         mappings_file: Path = mappings_file.resolve()
         if mappings_file.exists():
@@ -335,6 +441,7 @@ class GinDecompiler:
         self.decompile_multi(
             input_paths,
             output_dir=temp_dir,
+            header_file_dir=header_file_dir,
             include_number_prefix=False,
         )
 
