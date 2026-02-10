@@ -33,9 +33,6 @@ jobs:
 
       # Probably should run tests here
 
-      - name: Bump version
-        run: uv version --bump patch
-
       - name: Build
         run: uv build
 
