@@ -215,3 +215,4 @@ test_saves/
 entries_generator/
 test_json.json
 extracted/
+**/*.code-workspace
