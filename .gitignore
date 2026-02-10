@@ -208,11 +208,11 @@ __marimo__/
 
 # Custom
 config.json
-output/
+*output*/
 test_gins/
 test_saves/
-tests/
 .vscode/
 entries_generator/
 test_json.json
 extracted/
+**/*.code-workspace

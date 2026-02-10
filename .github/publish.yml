@@ -1,0 +1,43 @@
+name: Build and Publish to PyPI
+
+on:
+  push:
+    tags:
+    # Publish on any tag starting with a `v`, e.g., v0.1.0
+      - v*
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+
+    environment:
+      name: pypi
+
+    permissions:
+      id-token: write
+      contents: read
+    
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@7
+        with:
+          enable-cache: true
+
+      - name: Install Python
+        run: uv python install
+
+      - name: Install the project
+        run: uv sync --locked --all-extras --dev
+
+      # Probably should run tests here
+
+      - name: Bump version
+        run: uv version --bump patch
+
+      - name: Build
+        run: uv build
+
+      - name: Publish
+        run: uv publish
